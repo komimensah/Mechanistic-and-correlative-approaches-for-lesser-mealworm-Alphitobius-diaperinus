@@ -1,0 +1,2 @@
+# Mechanistic-and-correlative-approaches-for-lesser-mealworm-Alphitobius-diaperinus
+The study derives the mechanistic-based risk index from the ordinary differential equation that describes the population dynamics of A. diaperinus, while the ensemble SDM is derived using well-known algorithms such as Maximum entropy, Random forest, etc. We finally propose a hybrid model combining both approaches using a weighted average approach

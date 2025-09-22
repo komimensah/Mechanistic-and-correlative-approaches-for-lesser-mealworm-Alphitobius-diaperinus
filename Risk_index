@@ -1,0 +1,240 @@
+#clear the memory
+rm(list=ls())
+
+# #clear the console
+cat("\014")
+
+egg.dev.rate <- function(x,p,k,delta,lambda) {
+  
+  Tmin   =  11.7368721168422 # This was obtained from the linear regression
+  
+  p      =  0.01107
+  
+  k      =  41.54210
+  
+  delta  =  0.98086
+  
+  lambda = -1.14079
+  
+  r <- rep(0.0, times =length(x))
+  
+  for(i in 1:length(x)){
+    
+    if(  x[i] > Tmin  ){
+      
+      r[i] <- exp(p*x[i]) - exp( (p*k) - (k-x[i])/delta) + lambda
+      
+      if( r[i] < 0 ){ r[i] <- 0.0 }
+      
+      if( r[i] > 1) { r[i] <- 1.0 }
+      
+    }
+  }
+  
+  return(r)
+  
+}
+
+larva.dev.rate <- function(x){
+  
+  a     =  3.285e-05
+  
+  m     =  2.169e+00  
+  
+  Tmin  =  1.732e+01 
+  
+  Tmax  =  4.088e+01  
+  
+  r <- rep(0.0, times =length(x))
+  
+  for(i in 1:length(x)){
+    
+    if( (x[i] > Tmin) || (x[i] < Tmax) ){
+      
+      r[i] <- a*x[i]*(x[i] - Tmin) *((Tmax - x[i])^ (1/m)  )
+      
+    }
+    
+  }
+  
+  return(r)
+  
+}
+
+pupa.dev.rate <- function(x) {
+  
+  Tmin    =   13.7095659577215 # This was obtained from the linear regression
+  
+   p      =   0.0096287 
+  
+   k      =   41.1843270
+   
+   delta  =   0.9295908
+   
+   lambda =  -1.1507102
+  
+  r <- rep(0.0, times =length(x))
+  
+  for(i in 1:length(x)){
+    
+    if(  x[i] > Tmin  ){
+      
+      r[i] <- exp(p*x[i]) - exp( (p*k) - (k-x[i])/delta) + lambda
+      
+      if( r[i] < 0 ){ r[i] <- 0.0 }
+      
+      if( r[i] > 1) { r[i] <- 1.0 }
+      
+    }
+  }
+  
+  return(r)
+  
+}
+
+egg.mort.rate <- function(x){
+  
+  b1  = 3.572876
+  
+  b2  = -0.323474
+  
+  b3  = 0.004941
+  
+  m <- exp( b1 + (b2*x ) + (b3*(x^2)) )
+  
+  m[ m < 0 ] <- 0.0
+  
+  m[ m > 1 ] <- 1.0
+  
+  return(m)
+  
+}
+
+larva.mort.rate <- function(x){
+  
+  b1  = 3.572876
+  
+  b2  = -0.323474
+  
+  b3  = 0.004941
+  
+  m <- exp( b1 + (b2*x ) + (b3*(x^2)) )
+  
+  m[ m < 0 ] <- 0.0
+  
+  m[ m > 1 ] <- 1.0
+  
+  return(m)
+  
+}
+
+pupa.mort.rate <- function(x){
+  
+  b1  =   5.882576 
+  
+  b2  =  -0.578528
+  
+  b3  =   0.009458
+  
+  m <- exp( b1 + (b2*x ) + (b3*(x^2)) )
+  
+  m[ m < 0 ] <- 0.0
+  
+  m[ m > 1 ] <- 1.0
+  
+  return(m)
+  
+}
+
+fem.fec <- function(x){
+  
+  Topt  =  32.908160
+  
+  c     = -0.007832
+  
+  rmax  =  1.571304
+  
+  r <- exp( rmax +  (c*((Topt - x)^2)) )
+  
+  r[ r < 0 ] <- 0.0
+  
+  return(r)
+  
+}
+
+Adult.mort.rate <- function(x){
+  
+  
+  # Moyenne entre 12 et 4 mois en se basant sur le review paper de Sammarco sur le Mealworm
+  Average_longevity_per_female <- mean(12,4)*30
+  
+  
+  
+  daily_Senescence_rate <- 1 / Average_longevity_per_female  
+  
+  r <-   daily_Senescence_rate
+  
+  return(r)
+}
+
+risk.index <- function(x){
+  
+Num <- egg.dev.rate(x)*larva.dev.rate(x)*pupa.dev.rate(x)*fem.fec(x)*0.5
+  
+Den <- (egg.dev.rate(x)+egg.mort.rate(x))*(larva.dev.rate(x)+larva.mort.rate(x))*(pupa.dev.rate(x)+pupa.mort.rate(x))*Adult.mort.rate(x)
+  
+ r <- Num / Den
+ 
+ r[ is.nan(r) ] <- 0.0
+ 
+ r[ r < 0] <- 0.0
+ 
+ return(r)
+ 
+}
+
+temperature <- seq(from = 10, to = 50, length = 500)
+
+R_I <- array(data = 0 , dim = length(temperature))
+
+for(i in 1:length(temperature)){
+  
+  R_I[i] <- risk.index(temperature[i])
+  
+}
+
+R_I
+
+min(R_I)
+
+max(R_I)
+
+#Default margins of R plot
+bottom <- 5.1
+left   <- 4.1
+top    <- 4.1
+right  <- 2.1
+
+par(mar = c(bottom, left + 0.7, top, right) )#increase left margin with 0.7
+
+plot( temperature,
+      R_I ,
+      type   = "l",
+      lty   = 1,
+      lwd   = 4,
+      xlab  = "Temperature",
+      ylab  = "Risk Index (Mealworm)",
+      xlim  = c(10,50),
+      ylim =c(0, 100),
+      col="blue",
+      cex.lab=2,
+      #cex.axis=1.5,
+      frame.plot = FALSE,
+      axes=FALSE,
+      font.lab=2)
+
+abline(h = 1, col="red", lwd=3, lty=2)
+
+axis(side = 1, lwd = 3 ,cex.lab=1.5, cex.axis =2, font.lab=2)
+
+axis(side = 2, lwd = 3 ,cex.lab=1.5, cex.axis =2, font.lab=2)

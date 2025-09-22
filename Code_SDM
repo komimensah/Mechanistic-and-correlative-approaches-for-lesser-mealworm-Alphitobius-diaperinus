@@ -1,0 +1,138 @@
+######################################
+# Species Distribution Modeling (SDM)
+# With Dendrogram and Maxent
+######################################
+
+# Step 1: Load Libraries
+library(sdm)
+library(raster)
+library(dplyr)
+library(ggplot2)
+library(usdm)
+library(dismo)
+library(corrplot)
+library(dendextend)
+
+# Step 2: Clear Workspace
+rm(list = ls())
+
+# Step 3: Load Species Occurrence Data
+pv_data <- read.csv("/Users/kagboka/Desktop/millworm/Alphitobius_diaperinus_observation_data_not_Africa.csv", 
+                    header = TRUE, sep = ',')
+spg <- pv_data %>% select(longitude, latitude)
+spg$species <- 1  # Add species presence column
+coordinates(spg) <- c('longitude', 'latitude')  # Convert to spatial object
+
+# Step 4: Load and Validate Climate Data
+env_layers <- list.files("/Users/kagboka/Downloads/CRU", pattern = ".tif", full.names = TRUE)
+env_layers <- stack(env_layers)
+
+# Check for alignment
+if (!all(compareRaster(env_layers, extent = TRUE, crs = TRUE))) {
+  stop("Environmental layers are not aligned.")
+}
+
+# Optional: Check CRS and inspect the first raster
+print(crs(env_layers))
+plot(env_layers[[1]])
+points(spg)
+
+# Step 5: Reduce Multicollinearity with Dendrogram
+ex <- raster::extract(env_layers, spg)
+ex_data <- as.data.frame(ex)
+
+# Calculate correlation matrix
+cor_matrix <- cor(ex_data, use = "pairwise.complete.obs", method = "pearson")
+
+# Visualize correlation matrix
+corrplot(cor_matrix, method = "color", type = "upper", tl.col = "black", tl.cex = 0.8)
+
+# Perform hierarchical clustering
+cor_dist <- 1 - cor_matrix  # Convert correlation to distance
+hc <- hclust(as.dist(cor_dist), method = "complete")
+dendrogram <- as.dendrogram(hc)
+
+# Plot enhanced dendrogram
+dendrogram %>%
+  color_labels(k = 5) %>%
+  set("branches_k_color", value = c("red", "green", "blue", "orange", "purple")) %>%
+  set("labels_col", value = "black") %>%
+  set("branches_lwd", value = 2) %>%
+  set("labels_cex", value = 0.8) %>%
+  plot(main = "Enhanced Dendrogram of Correlation Matrix")
+
+# Select predictors based on dendrogram
+selected_layers <- stack(env_layers[[1]], env_layers[[2]])  # Update this with selected predictors
+
+# Step 6: Prepare Data for SDM
+set.seed(234)  # For reproducibility
+d <- sdmData(species ~ ., spg, predictors = selected_layers, bg = list(method = 'gDist', n = 1000))
+
+# Step 7: Train Models (Including Maxent)
+species_model <- sdm(species ~ ., d, 
+                     methods = c('rf', 'svm', 'brt','gam','glm','Maxent'),  # Added Maxent
+                     replication = c('cv'), 
+                     cv.folds = 3, 
+                     n = 5,
+                     parallelSetting = list(ncore = 4, method = 'parallel'))
+
+# Step 8: Evaluate Model Performance
+model_perfomances <- as.data.frame(getEvaluation(species_model))
+write.csv(model_perfomances, "/Users/kagboka/Desktop/millworm/model_performance.csv", row.names = FALSE)
+
+# Step 9: Ensemble Prediction with Both AUC and TSS
+tryCatch({
+  final_ensemble <- ensemble(
+    species_model,
+    newdata = selected_layers,
+    filename = "/Users/kagboka/Desktop/millworm/final_ensemble.tif",
+    setting = list(method = c('weighted', 'average'), 
+                   stat = c('auc', 'tss'), opt = 2),
+    overwrite = TRUE
+  )
+  
+  # Plot ensemble output
+  plot(rast(final_ensemble), main = "Final Ensemble Prediction")
+}, error = function(e) {
+  cat("Error in ensemble prediction:", e$message, "\n")
+})
+  
+  # Plot ensemble output
+  plot(rast(final_ensemble), main = "Final Ensemble Prediction")
+}, error = function(e) {
+  cat("Error in ensemble prediction:", e$message, "\n")
+})
+
+# Step 10: Evaluate Ensemble Performance
+tryCatch({
+  performance_ens <- evaluates(d, final_ensemble)
+  write.csv(as.data.frame(performance_ens@statistics), 
+            "/Users/kagboka/Desktop/millworm/ensemble_statistics.csv", 
+            row.names = TRUE)
+}, error = function(e) {
+  cat("Error in ensemble evaluation:", e$message, "\n")
+})
+
+# Step 11: Create Binary Maps for Multiple Thresholds
+tryCatch({
+  # Define threshold values
+  thresholds <- c(0.5, 0.4, 0.3, 0.2, 0.1)
+  
+  # Create a directory to save binary maps (optional)
+  binary_dir <- "/Users/kagboka/Desktop/millworm/binary_maps/"
+  if (!dir.exists(binary_dir)) {
+    dir.create(binary_dir)
+  }
+  
+  # Loop through thresholds and create binary maps
+  for (thresh in thresholds) {
+    binary_map <- rast(final_ensemble) > thresh  # Apply threshold
+    output_filename <- paste0(binary_dir, "binary_map_thresh_", gsub("\\.", "_", as.character(thresh)), ".tif")
+    writeRaster(binary_map, output_filename, overwrite = TRUE)
+    
+    # Plot binary map for visual confirmation
+    plot(binary_map, main = paste("Binary Map (Threshold >", thresh, ")"))
+  }
+}, error = function(e) {
+  cat("Error in binary map generation:", e$message, "\n")
+})

@@ -1,0 +1,169 @@
+
+################################Compute accuracy
+
+##########################
+# Load libraries
+library(raster)
+library(sf)
+library(dplyr)
+library(tidyverse)
+
+# Load the binary raster map
+r <- mechanistic
+r <- mechanistic2
+r<-sdm
+r<-sdm2
+r<-Hybrid
+# Load your shapefile
+world <- st_read("/Users/kagboka/Desktop/millworm/Millworm data/world-administrative-boundaries/world-administrative-boundaries.shp")
+
+# Load species points
+occurrences <- read.csv("/Users/kagboka/Desktop/millworm/Alphitobius_diaperinus_observation_data.csv")
+
+# Convert to sf
+species_sf <- st_as_sf(occurrences, coords = c("longitude", "latitude"), crs = crs(r))
+
+# Reproject
+species_sf <- st_transform(species_sf, crs = crs(r))
+world <- st_transform(world, crs = crs(r))
+
+# Extract raster values
+species_sf$raster_val <- raster::extract(r, species_sf)
+
+# Classify as TP/TN
+species_sf <- species_sf %>%
+  mutate(TP = ifelse(raster_val == 1, 1, 0),
+         TN = ifelse(raster_val == 0, 1, 0))
+
+# Intersect points with world shapefile and assign subregion
+intersection_idx <- st_intersects(species_sf, world)
+
+species_sf$subregion <- sapply(intersection_idx, function(i) {
+  if (length(i) > 0) {
+    as.character(world$region[i[1]])  # Using subregion-level detail
+  } else {
+    NA
+  }
+})
+
+# Define mapping from subregion to broader continent
+region_map <- list(
+  "North America" = c("Northern America"),
+  "South America" = c("South America", "Central America", "Caribbean"),
+  "Europe" = c("Southern Europe", "Eastern Europe", "Northern Europe", "Western Europe"),
+  "Africa" = c("Western Africa", "Eastern Africa", "Southern Africa", "Northern Africa", "Middle Africa"),
+  "Asia" = c("Eastern Asia", "Southern Asia", "South-Eastern Asia", "Western Asia", "Central Asia"),
+  "Oceania" = c("Australia and New Zealand", "Melanesia", "Micronesia", "Polynesia")
+)
+
+# Apply mapping to assign broader continent
+species_sf$continent <- sapply(species_sf$subregion, function(region) {
+  matched <- names(region_map)[sapply(region_map, function(x) region %in% x)]
+  if (length(matched) > 0) matched else NA
+})
+
+# Check mapping
+print("Mapped continents:")
+print(table(species_sf$continent, useNA = "ifany"))
+
+# Accuracy per continent
+accuracy_by_continent <- species_sf %>%
+  st_drop_geometry() %>%
+  filter(!is.na(continent)) %>%
+  group_by(continent) %>%
+  summarise(TP = sum(TP, na.rm = TRUE),
+            TN = sum(TN, na.rm = TRUE),
+            Accuracy = TP / (TP + TN)) %>%
+  arrange(desc(Accuracy))
+
+# Global accuracy
+global_accuracy <- species_sf %>%
+  st_drop_geometry() %>%
+  summarise(TP = sum(TP, na.rm = TRUE),
+            TN = sum(TN, na.rm = TRUE),
+            Accuracy = TP / (TP + TN))
+
+# Print results
+print("✅ Accuracy by continent (grouped):")
+print(accuracy_by_continent)
+
+print("🌍 Global accuracy:")
+print(global_accuracy)
+####################Ensemble model
+library(raster)
+library(sf)
+library(dplyr)
+library(tibble)
+
+# --- Load model rasters and shapefile ---
+mech <- mechanistic
+corr <- sdm
+regions <- world  # already read with st_read()
+regions <- st_transform(regions, crs = crs(mech))
+
+# --- Map subregions to continent-level regions ---
+region_map <- list(
+  "North America" = c("Northern America"),
+  "South America" = c("South America", "Central America", "Caribbean"),
+  "Europe" = c("Southern Europe", "Eastern Europe", "Northern Europe", "Western Europe"),
+  "Africa" = c("Western Africa", "Eastern Africa", "Southern Africa", "Northern Africa", "Middle Africa"),
+  "Asia" = c("Eastern Asia", "Southern Asia", "South-Eastern Asia", "Western Asia", "Central Asia"),
+  "Oceania" = c("Australia and New Zealand", "Melanesia", "Micronesia", "Polynesia")
+)
+
+# --- Assign continent to each polygon based on subregion ---
+regions$subregion <- tolower(trimws(regions$region))  # assuming 'region' is the subregion field
+regions$continent <- sapply(regions$subregion, function(region) {
+  matched <- names(region_map)[sapply(region_map, function(x) region %in% tolower(x))]
+  if (length(matched) > 0) matched else NA
+})
+
+# --- Define regional accuracy table (at continent level) ---
+region_perf <- tibble(
+  continent = c("Africa", "Asia", "Europe", "North America", "Oceania", "South America"),
+  mech = c(33.3, 94.4, 11, 62.2, 0, 38.9),
+  corr = c(0, 63.6, 93, 36, 66.7, 0)
+) %>%
+  mutate(
+    continent = tolower(trimws(continent)),
+    weight_mech = mech / (mech + corr),
+    weight_corr = 1 - weight_mech
+  )
+
+# --- Prepare for join ---
+regions$continent <- tolower(trimws(regions$continent))
+region_perf$continent <- tolower(trimws(region_perf$continent))
+
+# --- Join weights into region polygons ---
+regions <- left_join(regions, region_perf, by = "continent")
+
+# --- Confirm join worked ---
+cat("Missing mechanistic weights (should be 0):\n")
+print(table(is.na(regions$weight_mech)))
+cat("Continent values assigned:\n")
+print(unique(regions$continent))
+
+# --- Rasterize weights ---
+w_mech <- rasterize(regions, mech, field = "weight_mech", fun = "first")
+w_corr <- rasterize(regions, mech, field = "weight_corr", fun = "first")
+
+# --- Ensemble calculation ---
+ensemble <- (w_mech * mech) + (w_corr * corr)
+
+# --- Binary thresholding ---
+threshold <- 0.5
+ensemble_binary <- ensemble >= threshold
+ensemble_binary <- ratify(ensemble_binary)
+
+# --- Save rasters ---
+setwd('/Users/kagboka/Desktop/millworm/Millworm data/')
+writeRaster(ensemble, "ensemble_regionally_weighted_continuous.tif", overwrite = TRUE)
+writeRaster(ensemble_binary, "ensemble_regionally_weighted_binary.tif", overwrite = TRUE)
+writeRaster(w_mech, "mechanistic_weights_by_region.tif", overwrite = TRUE)
+writeRaster(w_corr, "correlative_weights_by_region.tif", overwrite = TRUE)
+
+# --- Plot for quick check ---
+plot(ensemble, main = "Continuous Ensemble Prediction")
+plot(ensemble_binary, main = "Binary Ensemble Map (Threshold = 0.5)")
+plot(w_mech, main = "Mechanistic Model Weight per Region")
+plot(w_corr, main = "Correlative Model Weight per Region")
